@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: EPL-2.0
+# Copyright Siemens AG, 2025. Part of the SW360 Portal Project.
+#
+# This program and the accompanying materials are made
+# available under the terms of the Eclipse Public License 2.0
+# which is available at https://www.eclipse.org/legal/epl-2.0/
+#
+# Make sure repo is REUSE compliant
+
+name: REUSE Compliance Check
+
+concurrency:
+  group: static-${{ github.head_ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  REUSE-Compliance-Check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: REUSE Compliance Check
+      uses: fsfe/reuse-action@v5

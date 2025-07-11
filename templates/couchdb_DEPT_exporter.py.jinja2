@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# SPDX-License-Identifier: EPL-2.0
+# Copyright Siemens AG, 2025. Part of the SW360 Portal Project.
+#
+# This program and the accompanying materials are made
+# available under the terms of the Eclipse Public License 2.0
+# which is available at https://www.eclipse.org/legal/epl-2.0/
+#
+# SPDX-License-Identifier: EPL-2.0
+#
+# This script is for fetching data for {{ group }} specific dashboards.
+
+import time
+
+from prometheus_client import CollectorRegistry, Gauge, delete_from_gateway
+
+from .couchdb_utils import get_cloudant_client, get_sw360_db_name, \
+    push_metrics, query_execution_count_all, \
+    query_execution_component_by_type, \
+    query_comp_proj_rel_time_series_execution, \
+    query_execution_releases_ecc_cleared_status, \
+    query_execution_most_used_comp, query_execution_most_used_licenses, \
+    query_execution_comp_not_used, get_pushgateway_url
+
+# Define Prometheus Gauges for each metric
+registry = CollectorRegistry()
+projects_count_{{ group }} = Gauge(
+    'projects_count_{{ group }}', 'Total number of projects',
+    registry=registry)
+releases_count_{{ group }} = Gauge(
+    'releases_count_{{ group }}', 'Total number of releases',
+    registry=registry)
+components_count_{{ group }} = Gauge(
+    'components_count_{{ group }}', 'Total number of components',
+    registry=registry)
+attachment_count_{{ group }} = Gauge(
+    'attachment_count_{{ group }}', 'Total number of attachments',
+    registry=registry)
+
+component_type_gauges_{{ group }} = {}
+
+Projects_{{ group }} = Gauge(
+    'Projects_{{ group }}', 'Number of projects created per year',
+    ['year'], registry=registry)
+Components_{{ group }} = Gauge(
+    'Components_{{ group }}', 'Number of components created per year',
+    ['year'], registry=registry)
+Releases_{{ group }} = Gauge(
+    'Releases_{{ group }}', 'Number of releases created per year',
+    ['year'], registry=registry)
+
+release_clearing_status_{{ group }} = Gauge(
+    "release_clearing_status_{{ group }}", "Release status based on type",
+    ['type', 'status'], registry=registry)
+
+most_used_component_count_{{ group }} = Gauge(
+    'most_used_component_count_{{ group }}', 'Count of most used components',
+    ['componentId', 'Component'], registry=registry)
+most_cleared_component_count_{{ group }} = Gauge(
+    'most_cleared_component_count_{{ group }}',
+    'Count of most cleared components',
+    ['componentId', 'Component'], registry=registry)
+most_used_license_count_{{ group }} = Gauge(
+    'most_used_license_count_{{ group }}',
+    'Count of most used licenses',
+    ['License'], registry=registry)
+unused_component_count_{{ group }} = Gauge(
+    'unused_component_count_{{ group }}',
+    'Count of components not being used',
+    ['component', 'name'], registry=registry)
+
+attachment_usage_department_{{ group }} = Gauge(
+    'attachment_usage_department_{{ group }}',
+    'Attachment usage by department',
+    ['department'], registry=registry)
+attachment_usage_group_{{ group }} = Gauge(
+    'attachment_usage_group_{{ group }}',
+    'Attachment usage by group',
+    ['group'], registry=registry)
+
+attachment_usage_group_all_{{ group }} = Gauge(
+    'attachment_usage_group_all_{{ group }}',
+    'Attachment usage by group {{ group }}',
+    ['group'], registry=registry)
+
+
+def main():
+    print("\n Execution starting for {{ group }} ..........")
+    # Connect to CouchDB
+    client = get_cloudant_client()
+    sw360_db = get_sw360_db_name()
+
+    # Periodically fetch data and update Prometheus metrics
+    result_rel, result_comp = query_execution_count_all(
+        client, sw360_db, projects_count_{{ group }},
+        releases_count_{{ group }}, components_count_{{ group }},
+        "function(doc) {"
+        " if (doc.type == 'project' && doc.businessUnit == '{{ group }}') {"
+        "  if(doc.releaseIdToUsage) {"
+        "   for(var key in doc.releaseIdToUsage) { emit(key, doc._id); }"
+        "  } else { emit(doc._id, doc._id) } } }",
+        "all{{ group }}")
+    query_execution_component_by_type(
+        client, sw360_db,
+        "function(doc) {"
+        " if (doc.type == 'component' && doc.businessUnit == '{{ group }}') {"
+        "  emit(doc.componentType, doc._id);  } }",
+        "by{{ group }}componenttype", "{{ group }}",
+        "components_count_{{ group }}_",
+        component_type_gauges_{{ group }}, registry)
+    query_comp_proj_rel_time_series_execution(
+        client, sw360_db, result_rel, result_comp,
+        "function(doc) {"
+        " if (doc.type == 'project' && doc.businessUnit == '{{ group }}') {"
+        "  emit(doc.createdOn, doc._id);"
+        " }"
+        "}", "byProjCreatedOn{{ group }}",
+        Projects_{{ group }}, Components_{{ group }},
+        Releases_{{ group }})
+    query_execution_releases_ecc_cleared_status(
+        result_rel, result_comp, release_clearing_status_{{ group }})
+    query_execution_most_used_comp(
+        result_rel, most_used_component_count_{{ group }})
+    query_execution_most_used_licenses(
+        result_comp, most_used_license_count_{{ group }})
+    query_execution_comp_not_used(
+        client, sw360_db, unused_component_count_{{ group }})
+    delete_from_gateway(get_pushgateway_url(),
+                        job='couchdb_{{ group }}_exporter',
+                        grouping_key={'instance': 'latest'})
+    push_metrics('couchdb_{{ group }}_exporter', registry)
+    print("\n Execution ended for {{ group }} ............")
+
+
+if __name__ == '__main__':
+    try:
+        start_time = time.time()
+        main()
+        print('\nExecution time: ' + "{0:.2f}"
+              .format(time.time() - start_time) + 's')
+    except Exception as e:
+        print('Exception message ', e)

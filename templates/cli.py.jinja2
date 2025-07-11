@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# SPDX-License-Identifier: EPL-2.0
+# Copyright Siemens AG, 2025. Part of the SW360 Portal Project.
+#
+# This program and the accompanying materials are made
+# available under the terms of the Eclipse Public License 2.0
+# which is available at https://www.eclipse.org/legal/epl-2.0/
+#
+# SPDX-License-Identifier: EPL-2.0
+#
+# This helper script is for fetching all CLX data for global dashboard and
+# individual group project dashboards.
+
+import time
+
+import click
+
+from .couchdb_CLI_exporter import main as cli_main
+{% for group in groups %}
+from .couchdb_{{ group|lower }}_exporter import main as {{ group|lower }}_main{% endfor %}
+
+from .couchdb_common_metrics import main as exporter_main
+
+
+@click.command()
+@click.argument("exporters", required=False, nargs=-1)
+def cli(exporters: tuple[str, ...]):
+    """Exporters to run. [DEFAULT: {% for group in groups %}{{ group }}{% if not loop.last %}, {% endif %}{% endfor %}]"""
+    if len(exporters) < 1:
+        exporters = [{% for group in groups %}"{{ group }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+    execute_main(exporter_main)
+    execute_main(cli_main)
+    for ex in exporters:
+        {%- for group in groups %}
+        if ex.upper() == "{{ group }}":
+            execute_main({{ group|lower }}_main)
+        {%- endfor %}
+
+
+def execute_main(function_main):
+    try:
+        start_time = time.time()
+        function_main()
+        print('\nExecution time: ' + "{0:.2f}"
+              .format(time.time() - start_time) + 's')
+
+    except Exception as e:
+        print('Exception message ', e)
