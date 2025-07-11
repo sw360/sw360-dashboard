@@ -1,0 +1,13 @@
+version = 1
+
+[[annotations]]
+path = "grafana/templates/*.jinja2"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2025 Siemens AG"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["pyproject.toml", "poetry.lock"]
+precedence = "override"
+SPDX-FileCopyrightText = "2025 Siemens AG"
+SPDX-License-Identifier = "MIT"

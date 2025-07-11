@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: FSFAP
+# SPDX-FileCopyrightText: 2025 Siemens AG
+# Data source for dashboards running on Docker Compose
+
+apiVersion: 1
+
+providers:
+  - name: 'docker-dashboard-json'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: true
+    # <int> how often Grafana will scan for changed dashboards
+    updateIntervalSeconds: 100
+    # <bool> allow updating provisioned dashboards from the UI
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

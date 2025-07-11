@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# SPDX-License-Identifier: MIT
+# Copyright Siemens AG, 2025. Part of the SW360 Portal Project.
+#
+# This script if for fetching all CLX data for global dashboard.
+{#import re#}
+import time
+from collections import defaultdict
+
+from ibm_cloud_sdk_core import ApiException
+from ibmcloudant import CloudantV1
+from prometheus_client import CollectorRegistry, Gauge, delete_from_gateway
+
+from src.sw360_dashboard.couchdb_utils import push_metrics, \
+    get_cloudant_client, get_sw360_db_name, \
+    get_attachment_db_name, save_new_view, \
+    fetch_results, CLOUDANT_LIMIT_MAX, get_pushgateway_url
+
+# Define Prometheus Gauges for each metric
+registry = CollectorRegistry()
+
+attachment_usage_department = Gauge('attachment_usage_department',
+                                    'Attachment usage by department',
+                                    ['department'],
+                                    registry=registry)
+attachment_usage_group = Gauge('attachment_usage_group',
+                               'Attachment usage by group', ['group'],
+                               registry=registry)
+
+{% for group in groups %}
+attachment_usage_department_{{ group }} = Gauge(
+    'attachment_usage_department_{{ group }}',
+    'Attachment usage by department {{ group }}',
+    ['department'], registry=registry)
+attachment_usage_group_{{ group }} = Gauge(
+    'attachment_usage_group_{{ group }}',
+    'Attachment usage by group {{ group }}',
+    ['group'], registry=registry)
+{% endfor %}
+
+def get_cli_list(client: CloudantV1, sw360_db_name: str, attach_db_name: str,
+                 group_filter: str | None, attachment_usage_gauge: Gauge):
+    print('Executing the project query.................../')
+
+    design_doc = "Project"
+    view = "by" + (group_filter if group_filter is not None else "") + \
+           "ReleaseAndBusinessUnit"
+    map_function = {
+        "map": "function(doc) {"
+               " if (doc.type == 'project'" +
+               (f" && doc.businessUnit == '{group_filter}'"
+                if group_filter is not None else "") +
+               ") {"
+               "  for(var i in doc.releaseIdToUsage) {"
+               "   emit(i, {businessUnit:doc.tag,"
+               "     group:doc.businessUnit, id:doc._id});"
+               "  } } }"
+    }
+
+    # Creating temporary view byReleaseAndBusinessUnit for project
+    save_new_view(client, sw360_db_name, design_doc, view, map_function)
+
+    # Executing the view such that it returns projects that has releases
+    result = list(fetch_results(client, sw360_db_name, design_doc, view))
+{# Following logic is used to simplify group names into 2 words, enable optionally.
+   DP, DP A, DP ABD, DP AEW XY => DP
+
+    pattern = r'[^A-Za-z0-9\s]+'
+    for entry_dict in result:
+        if "value" in entry_dict and "businessUnit" in entry_dict["value"]:
+            if not entry_dict["value"]["businessUnit"] or entry_dict["value"]["businessUnit"].strip() == "":
+                entry_dict["value"]["businessUnit"] = "empty"
+            cleaned_string = re.sub(pattern, ' ', entry_dict["value"]["businessUnit"])
+            words = cleaned_string.split()
+
+            if words and (words[0] == 'DEPT' or group_filter == 'DEPT'):
+                if len(words) >= 2:
+                    first_two_words = ' '.join(words[:2])
+                else:
+                    first_two_words = words[0]
+                entry_dict["value"]["businessUnit"] = first_two_words#}
+    unique_dict_map = {}  # Dictionary to track unique combinations
+    unique_dicts = []  # List to store unique dictionaries
+
+    for item in result:
+        if "value" in item and "businessUnit" in item["value"]:
+            key = item["key"]
+            group = item["value"]["businessUnit"]
+            unique_key = (key, group)  # Combining key and BU for uniqueness
+
+            if unique_key not in unique_dict_map:
+                unique_dict_map[unique_key] = True
+                unique_dicts.append(item)
+
+    result = unique_dicts
+
+    id_list = [row["key"] for row in result]
+
+    # Executing the release query such that it returns releases that has CLI
+    # accepted status attachments
+    try:
+        db_query = client.post_find(
+            sw360_db_name, {
+                "type": "release", "_id": {"$in": id_list},
+                "$and": [{
+                    "attachments": {
+                        "$exists": True, "$type": "array",
+                        "$elemMatch": {
+                            "attachmentType": "COMPONENT_LICENSE_INFO_XML",
+                            "checkStatus": "ACCEPTED"
+                        }}
+                }]
+            }, limit=CLOUDANT_LIMIT_MAX).get_result()
+        db_list = list(db_query["docs"])
+    except ApiException as ex:
+        print(f"Error: {ex}")
+        return None
+
+    filtered_data = [{
+        "_id": item["_id"], "type": item["type"],
+        "attachments": [
+            attachment for attachment in item["attachments"] if
+            attachment["attachmentType"] == "COMPONENT_LICENSE_INFO_XML" and
+            "checkStatus" in attachment and
+            attachment["checkStatus"] is not None and
+            attachment["checkStatus"] == "ACCEPTED"]} for item in db_list]
+
+    # Update the first list to remove releaseId not present in second list
+    ids_to_keep = {doc["_id"] for doc in filtered_data}
+    filtered_list = [doc for doc in result if doc["key"] in ids_to_keep]
+
+    attach_id_list = []
+    attach_values_list = []
+    for doc in filtered_data:
+        # Getting nested attachments list from release documents
+        attach_list = doc.get("attachments", [])
+        attach_values_list.extend(attach_list)
+        # Getting the attachmentContentId and storing it in a list of the same
+        content_ids = [attach.get("attachmentContentId") for attach in
+                       attach_list]
+        attach_id_list.extend(content_ids)
+
+    # Executing the attachment release query such that it returns the
+    # attachment doc list that has the actual length
+    try:
+        db_query = client.post_find(
+            attach_db_name, {
+                "type": "attachment", "_id": {"$in": attach_id_list}},
+            limit=CLOUDANT_LIMIT_MAX).get_result()
+        db_attach_list = list(db_query["docs"])
+    except ApiException as ex:
+        print(f"Error: {ex}")
+        return None
+
+    # Create a new list of dictionaries with the specified key-value pairs
+    new_list = {}
+    length_list = []
+    for doc in db_attach_list:
+        for key, value in doc.get("_attachments", {}).items():
+            length = value.get("length")
+            new_list[doc["_id"]] = length
+            length_list.append(length)
+
+    content_id_map = {}
+    for doc in filtered_data:
+        # Getting the nested attachment content
+        attach_list = doc.get("attachments", [])
+        for attach in attach_list:
+            content_id_map[attach["attachmentContentId"]] = {
+                "releaseId": doc["_id"], "filename": attach["filename"]}
+
+    # Merge data based on 'attachid' and 'contentId'
+    merged_list = []
+    for doc in db_attach_list:
+        attachid = doc["_id"]
+        if attachid in content_id_map:
+            # Comparing attachmentId from attachment doc with attachmentContent
+            # from release doc
+            content_data = content_id_map[attachid]
+            length = None
+            for key, value in doc.get("_attachments", {}).items():
+                length = value.get("length")
+            # Creating a single document which has releaseId, attachmentId,
+            # filename and length
+            merged_doc = {
+                "releaseId": content_data["releaseId"], "attachid": attachid,
+                "filename": content_data["filename"], "length": length}
+            merged_list.append(merged_doc)
+
+    for entry_dict in merged_list:
+        if "length" in entry_dict and entry_dict["length"] is None:
+            entry_dict["length"] = 0
+
+    length_data = {}
+
+    # Iterate through the second list to calculate total length for each relId
+    for entry in merged_list:
+        rel_id = entry["releaseId"]
+        length = entry["length"]
+        if rel_id in length_data:
+            length_data[rel_id] += length
+        else:
+            length_data[rel_id] = length
+
+    # Combine data
+    combined_data = []
+    for entry in filtered_list:
+        key = entry["key"]
+        value = entry["value"]
+        combined_data.append({
+            "key": key,
+            "value": value,
+            "length": length_data[key] if key in length_data else 0
+        })
+
+    combined_data = null_check_cli(combined_data)
+
+    business_unit_info = defaultdict(lambda: {"count": 0, "total_length": 0})
+    append_cli_size(business_unit_info, combined_data, "businessUnit")
+{% for group in groups %}
+    {% if loop.first %}if{% else %}elif{% endif %} group_filter == "{{ group }}":
+        for business_unit, info in business_unit_info.items():
+            attachment_usage_department_{{ group }}.labels(
+                department=business_unit).set(info['total_length'])
+{% endfor %}
+    group_info = defaultdict(lambda: {"count": 0, "total_length": 0})
+    group_info = append_cli_size(group_info, combined_data, "group")
+
+    for group, info in group_info.items():
+        attachment_usage_gauge.labels(group=group).set(info['total_length'])
+
+
+def append_cli_size(organizational_unit, combined_data, doc_type):
+    for doc in combined_data:
+        if "value" in doc and doc_type in doc["value"] and "length" in doc:
+            unit = doc["value"][doc_type]
+            length = doc["length"]
+            organizational_unit[unit]["count"] += 1
+            organizational_unit[unit]["total_length"] += length
+    return organizational_unit
+
+
+def null_check_cli(combined_data):
+    for entry_dict in combined_data:
+        if "value" in entry_dict and "businessUnit" in entry_dict["value"]:
+            if (not entry_dict["value"]["businessUnit"] or
+                    entry_dict["value"]["businessUnit"].strip() == ""):
+                entry_dict["value"]["businessUnit"] = "empty"
+            if "length" in entry_dict and entry_dict["length"] is None:
+                entry_dict["length"] = 0
+        if "value" in entry_dict and "group" in entry_dict["value"]:
+            if (not entry_dict["value"]["group"] or
+                    entry_dict["value"]["group"].strip() == ""):
+                entry_dict["value"]["group"] = "empty"
+    return combined_data
+
+
+def main():
+    print("\n Execution starting for CLI ............")
+    # Connect to CouchDB
+    client = get_cloudant_client()
+    sw360_db = get_sw360_db_name()
+    attachment_db = get_attachment_db_name()
+
+    get_cli_list(client, sw360_db, attachment_db, None, attachment_usage_group)
+{% for group in groups %}
+    get_cli_list(client, sw360_db, attachment_db,
+                 "{{ group }}", attachment_usage_group_{{ group }})
+{% endfor %}
+    print("Code executed!")
+    delete_from_gateway(get_pushgateway_url(), job='couchdb_CLI_exporter',
+                        grouping_key={'instance': 'latest'})
+    push_metrics('couchdb_CLI_exporter', registry)
+    print("\n Execution ended for CLI ............")
+
+
+if __name__ == '__main__':
+    try:
+        start_time = time.time()
+        main()
+        print('\nExecution time: ' + "{0:.2f}"
+              .format(time.time() - start_time) + 's')
+
+    except Exception as e:
+        print('Exception message ', e)

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: FSFAP
+# SPDX-FileCopyrightText: 2025 Siemens AG
+# Data source for prometheus running on Docker Compose
+
+apiVersion: 1
+datasources:
+  - name: prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    # Access mode - proxy (server in the UI) or direct (browser in the UI).
+    url: http://prometheus:9090
+    orgId: 1
+    isDefault: true
+    jsonData:
+      httpMethod: POST
