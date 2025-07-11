@@ -21,6 +21,9 @@ dependencies = [
 [tool.poetry]
 packages = [{include = "sw360_dashboard", from = "src"}]
 
+[tool.poetry.group.dev.dependencies]
+flake8 = "^7.3.0"
+
 [project.scripts]
 sw360-exporter = "sw360_dashboard.cli:cli"
 

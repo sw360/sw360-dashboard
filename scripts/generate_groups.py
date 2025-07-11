@@ -19,6 +19,9 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
+
 def generate_random_string(length=14):
     """Generate random uuid for Grafana dashboard."""
     characters = string.ascii_lowercase
@@ -26,15 +29,16 @@ def generate_random_string(length=14):
 
 
 def create_exporter_templates_env():
-    template_dir = Path(__file__).parent.parent / 'templates'
+    template_dir = ROOT_DIR.joinpath('templates')
     env = Environment(loader=FileSystemLoader(template_dir))
     return env
 
 
 def create_group_file(env, group_name):
     template = env.get_template('couchdb_DEPT_exporter.py.jinja2')
-    group_file_path = Path("src/sw360_dashboard/"
-                           f"couchdb_{group_name.lower()}_exporter.py")
+    group_file_path = ROOT_DIR.joinpath(
+        "src", "sw360_dashboard",
+        f"couchdb_{group_name.lower()}_exporter.py")
     with group_file_path.open("w") as group_file:
         group_file.write(template.render(group=group_name))
         group_file.write("\n")
@@ -42,7 +46,7 @@ def create_group_file(env, group_name):
 
 def update_cli_file(env, groups):
     template = env.get_template('cli.py.jinja2')
-    cli_file_path = Path("src/sw360_dashboard/cli.py")
+    cli_file_path = ROOT_DIR.joinpath("src", "sw360_dashboard/cli.py")
     with cli_file_path.open("w") as cli_file:
         cli_file.write(template.render(groups=groups))
         cli_file.write("\n")
@@ -50,21 +54,22 @@ def update_cli_file(env, groups):
 
 def update_common_file(env, groups):
     template = env.get_template('couchdb_CLI_exporter.py.jinja2')
-    common_file_path = Path("src/sw360_dashboard/couchdb_CLI_exporter.py")
+    common_file_path = ROOT_DIR.joinpath(
+        "src", "sw360_dashboard", "couchdb_CLI_exporter.py")
     with common_file_path.open("w") as common_file:
         common_file.write(template.render(groups=groups))
         common_file.write("\n")
 
 
 def create_dashboard_templates_env():
-    template_dir = Path(__file__).parent.parent / 'grafana' / 'templates'
+    template_dir = ROOT_DIR.joinpath('grafana', 'templates')
     env = Environment(loader=FileSystemLoader(template_dir))
     return env
 
 
 def create_dashboard_cli_file(env, groups):
     template = env.get_template('cli.json.jinja2')
-    cli_file_path = Path("grafana/dashboards/cli.json")
+    cli_file_path = ROOT_DIR.joinpath("grafana", "dashboards", "cli.json")
     with cli_file_path.open("w") as cli_file:
         cli_file.write(template.render(groups=groups,
                                        uuid=generate_random_string(14)))
@@ -72,7 +77,8 @@ def create_dashboard_cli_file(env, groups):
 
 def create_dashboard_file(env, group_name):
     template = env.get_template('dept.json.jinja2')
-    group_file = Path(f"grafana/dashboards/{group_name.lower()}.json")
+    group_file = ROOT_DIR.joinpath(
+        "grafana", "dashboards", f"{group_name.lower()}.json")
     with group_file.open("w") as dashboard_file:
         dashboard_file.write(template.render(group=group_name,
                                              uuid=generate_random_string(14)))
@@ -80,7 +86,7 @@ def create_dashboard_file(env, group_name):
 
 def copy_common_dashboard_files(env):
     template = env.get_template('global.json.jinja2')
-    copy_file_path = Path("grafana/dashboards/global.json")
+    copy_file_path = ROOT_DIR.joinpath("grafana", "dashboards", "global.json")
     with copy_file_path.open("w") as copy_file:
         copy_file.write(template.render(uuid=generate_random_string(14)))
 
