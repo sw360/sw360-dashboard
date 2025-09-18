@@ -9,40 +9,84 @@
 # to export metrics to Prometheus for visualization in Grafana
 
 import time
-import json
-from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
-import sys
-import os
 
-# Add the src directory to the path to import the modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from sw360_dashboard.collect_components_releases_projects_data import get_all_data, build_release_component_mapping, count_projects_per_release, organize_data
-from sw360_dashboard.couchdb_utils import get_pushgateway_url
+from ibmcloudant import CloudantV1
+from prometheus_client import (
+    CollectorRegistry, Gauge, push_to_gateway, delete_from_gateway,
+)
+from src.sw360_dashboard.collect_components_releases_projects_data import (
+    get_all_data, build_release_component_mapping, count_projects_per_release,
+    organize_data,
+)
+from sw360_dashboard.couchdb_utils import (
+    get_pushgateway_url, get_cloudant_client, get_sw360_db_name, push_metrics,
+)
 
 # Define Prometheus Gauges for Components, Releases, and Projects metrics
 registry = CollectorRegistry()
 
 # Overview metrics
-total_components_gauge = Gauge('crp_total_components', 'Total number of components', registry=registry)
-total_releases_gauge = Gauge('crp_total_releases', 'Total number of releases', registry=registry)
-total_projects_gauge = Gauge('crp_total_projects', 'Total number of projects', registry=registry)
-components_with_releases_gauge = Gauge('crp_components_with_releases', 'Number of components that have releases', registry=registry)
-components_without_releases_gauge = Gauge('crp_components_without_releases', 'Number of components without releases', registry=registry)
-releases_with_projects_gauge = Gauge('crp_releases_with_projects', 'Number of releases linked to projects', registry=registry)
-releases_without_projects_gauge = Gauge('crp_releases_without_projects', 'Number of releases not linked to projects', registry=registry)
-orphaned_releases_gauge = Gauge('crp_orphaned_releases', 'Number of orphaned releases (missing component)', registry=registry)
+total_components_gauge = Gauge(
+    'crp_total_components', 'Total number of components',
+    registry=registry,
+)
+total_releases_gauge = Gauge(
+    'crp_total_releases', 'Total number of releases',
+    registry=registry
+)
+total_projects_gauge = Gauge(
+    'crp_total_projects', 'Total number of projects',
+    registry=registry,
+)
+components_with_releases_gauge = Gauge(
+    'crp_components_with_releases', 'Number of components that have releases',
+    registry=registry,
+)
+components_without_releases_gauge = Gauge(
+    'crp_components_without_releases', 'Number of components without releases',
+    registry=registry,
+)
+releases_with_projects_gauge = Gauge(
+    'crp_releases_with_projects', 'Number of releases linked to projects',
+    registry=registry,
+)
+releases_without_projects_gauge = Gauge(
+    'crp_releases_without_projects',
+    'Number of releases not linked to projects', registry=registry,
+)
+orphaned_releases_gauge = Gauge(
+    'crp_orphaned_releases', 'Number of orphaned releases (missing component)',
+    registry=registry,
+)
 
 # Component metrics by type
-components_by_type_gauge = Gauge('crp_components_by_type', 'Number of components by type', ['component_type'], registry=registry)
+components_by_type_gauge = Gauge(
+    'crp_components_by_type', 'Number of components by type',
+    ['component_type'], registry=registry,
+)
 
 # Component and release metrics for detailed tables
-component_release_count_gauge = Gauge('crp_component_release_count', 'Number of releases per component', ['component_id', 'component_name', 'component_type'], registry=registry)
-release_project_count_gauge = Gauge('crp_release_project_count', 'Number of projects using each release', ['release_id', 'release_name', 'release_version', 'component_name'], registry=registry)
+component_release_count_gauge = Gauge(
+    'crp_component_release_count', 'Number of releases per component',
+    ['component_id', 'component_name', 'component_type'],
+    registry=registry,
+)
+release_project_count_gauge = Gauge(
+    'crp_release_project_count', 'Number of projects using each release',
+    ['release_id', 'release_name', 'release_version', 'component_name'],
+    registry=registry,
+)
 
 # Time-based metrics
-components_created_per_year_gauge = Gauge('crp_components_created_per_year', 'Number of components created per year', ['year'], registry=registry)
-releases_created_per_year_gauge = Gauge('crp_releases_created_per_year', 'Number of releases created per year', ['year'], registry=registry)
+components_created_per_year_gauge = Gauge(
+    'crp_components_created_per_year', 'Number of components created per year',
+    ['year'], registry=registry,
+)
+releases_created_per_year_gauge = Gauge(
+    'crp_releases_created_per_year', 'Number of releases created per year',
+    ['year'], registry=registry,
+)
+
 
 def extract_year_from_date(date_string):
     """Extract year from date string, handling various formats"""
@@ -54,47 +98,50 @@ def extract_year_from_date(date_string):
             date_part = date_string.split('T')[0]
         else:
             date_part = date_string
-        
+
         year = int(date_part.split('-')[0])
         return year if year > 1990 and year <= 2030 else None
     except (ValueError, IndexError):
         return None
 
+
 def update_component_type_metrics(organized_data):
     """Update component type distribution metrics"""
     type_counts = {}
-    
+
     for component in organized_data:
         comp_type = component['component_type'] or 'Unknown'
         type_counts[comp_type] = type_counts.get(comp_type, 0) + 1
-    
+
     for comp_type, count in type_counts.items():
         components_by_type_gauge.labels(component_type=comp_type).set(count)
+
 
 def update_time_based_metrics(organized_data):
     """Update time-based metrics for components and releases"""
     component_years = {}
     release_years = {}
-    
+
     for component in organized_data:
         # Component creation year
         comp_year = extract_year_from_date(component['component_created_on'])
         if comp_year:
             component_years[comp_year] = component_years.get(comp_year, 0) + 1
-        
+
         # Release creation years
         for release in component['releases']:
             rel_year = extract_year_from_date(release['release_created_on'])
             if rel_year:
                 release_years[rel_year] = release_years.get(rel_year, 0) + 1
-    
+
     # Set component metrics by year
     for year, count in component_years.items():
         components_created_per_year_gauge.labels(year=str(year)).set(count)
-    
+
     # Set release metrics by year
     for year, count in release_years.items():
         releases_created_per_year_gauge.labels(year=str(year)).set(count)
+
 
 def update_detailed_metrics(organized_data):
     """Update detailed metrics for components and releases"""
@@ -103,51 +150,62 @@ def update_detailed_metrics(organized_data):
         comp_name = component['component_name']
         comp_type = component['component_type'] or 'Unknown'
         release_count = component['total_releases']
-        
+
         # Set component release count
         component_release_count_gauge.labels(
             component_id=comp_id,
             component_name=comp_name,
-            component_type=comp_type
+            component_type=comp_type,
         ).set(release_count)
-        
+
         # Set release project counts
         for release in component['releases']:
             release_project_count_gauge.labels(
                 release_id=release['release_id'],
                 release_name=release['release_name'],
                 release_version=release['release_version'],
-                component_name=comp_name
+                component_name=comp_name,
             ).set(release['project_count'])
 
-def collect_and_export_metrics():
+
+def collect_and_export_metrics(client: CloudantV1, database: str):
     """Main function to collect data and export metrics"""
     print('Starting Components, Releases, and Projects metrics collection...')
-    
+
     # Get all data
-    components, releases, projects = get_all_data()
-    
+    components, releases, projects = get_all_data(client, database)
+
     # Build mappings
     release_to_component = build_release_component_mapping(releases)
-    
+
     # Count projects per release
-    release_project_count, release_project_names = count_projects_per_release(projects)
-    
+    release_project_count, release_project_names = count_projects_per_release(
+        projects,
+    )
+
     # Organize data
     organized_data, orphaned_releases = organize_data(
-        components, releases, release_project_count, release_project_names, release_to_component
+        components, releases, release_project_count, release_project_names,
+        release_to_component,
     )
-    
+
     # Calculate summary statistics
     total_components = len(organized_data)
     total_releases = sum(c['total_releases'] for c in organized_data)
     total_projects_count = len(projects)
-    components_with_releases = len([c for c in organized_data if c['total_releases'] > 0])
+    components_with_releases = len(
+        [c for c in organized_data if c['total_releases'] > 0],
+    )
     components_without_releases = total_components - components_with_releases
-    releases_with_projects = sum(1 for c in organized_data for r in c['releases'] if r['project_count'] > 0)
+    releases_with_projects = sum(
+        1
+        for c in organized_data
+        for r in c['releases']
+        if r['project_count'] > 0
+    )
     releases_without_projects = total_releases - releases_with_projects
     orphaned_releases_count = len(orphaned_releases)
-    
+
     # Update overview metrics
     total_components_gauge.set(total_components)
     total_releases_gauge.set(total_releases)
@@ -157,43 +215,56 @@ def collect_and_export_metrics():
     releases_with_projects_gauge.set(releases_with_projects)
     releases_without_projects_gauge.set(releases_without_projects)
     orphaned_releases_gauge.set(orphaned_releases_count)
-    
+
     # Update component type metrics
     update_component_type_metrics(organized_data)
-    
+
     # Update time-based metrics
     update_time_based_metrics(organized_data)
-    
+
     # Update detailed metrics
     update_detailed_metrics(organized_data)
-    
-    print(f'Metrics updated:')
+
+    print('Metrics updated:')
     print(f'  - Total Components: {total_components}')
     print(f'  - Total Releases: {total_releases}')
     print(f'  - Total Projects: {total_projects_count}')
     print(f'  - Components with releases: {components_with_releases}')
     print(f'  - Releases with projects: {releases_with_projects}')
     print(f'  - Orphaned releases: {orphaned_releases_count}')
-    
+
     # Push metrics to Prometheus
     push_to_gateway(
-        get_pushgateway_url(), 
-        job='crp_exporter', 
-        registry=registry, 
-        grouping_key={'instance': 'latest'}
+        get_pushgateway_url(), job='crp_exporter',
+        registry=registry, grouping_key={'instance': 'latest'},
     )
     print('Metrics pushed to Prometheus Push Gateway successfully!')
 
+
 def main():
     """Main execution function"""
-    try:
-        start_time = time.time()
-        collect_and_export_metrics()
-        execution_time = time.time() - start_time
-        print(f'Components, Releases, and Projects metrics collection completed in {execution_time:.2f} seconds')
-    except Exception as e:
-        print(f'Error collecting metrics: {e}')
-        raise
+    print("\n Execution starting for exporter ............")
+    client = get_cloudant_client()
+    sw360_db = get_sw360_db_name()
+    collect_and_export_metrics(client, sw360_db)
+
+    print("Code executed")
+    delete_from_gateway(get_pushgateway_url(), job='couchdb_exporter',
+                        grouping_key={'instance': 'latest'})
+    push_metrics('couchdb_exporter', registry)
+    print("\n Execution ended for exporter ............")
+
 
 if __name__ == '__main__':
-    main()
+    try:
+        start_time = time.time()
+        main()
+        print(
+            f'Components, Releases, and Projects metrics collection '
+            f'completed in {time.time() - start_time:.2f} seconds',
+        )
+        print('\nExecution time: ' + "{0:.2f}"
+              .format(time.time() - start_time) + 's')
+
+    except Exception as e:
+        print('Exception message ', e)

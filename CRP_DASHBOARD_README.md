@@ -85,7 +85,7 @@ The `couchdb_CRP_exporter.py` script converts the collected data into Prometheus
 
 ### 1. Run the Collection Script
 ```bash
-cd /home/deo002/dashboard
+cd /home/sw360/dashboard
 python3 -m src.sw360_dashboard.collect_components_releases_projects_data
 ```
 
@@ -95,7 +95,7 @@ This generates:
 
 ### 2. Run the Prometheus Exporter
 ```bash
-cd /home/deo002/dashboard  
+cd /home/sw360/dashboard  
 python3 -m src.sw360_dashboard.couchdb_CRP_exporter
 ```
 
@@ -125,7 +125,7 @@ Consider adding the exporter to a cron job for regular updates:
 
 ```bash
 # Run every hour
-0 * * * * cd /home/deo002/dashboard && python3 -m src.sw360_dashboard.couchdb_CRP_exporter
+0 * * * * cd /home/sw360/dashboard && python3 -m src.sw360_dashboard.couchdb_CRP_exporter
 ```
 
 ## Troubleshooting
