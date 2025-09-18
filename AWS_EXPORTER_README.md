@@ -1,5 +1,5 @@
 <!--
- SPDX-License-Identifier: EPL-2.0
+ SPDX-License-Identifier: MIT
  SPDX-FileCopyrightText: 2025 Siemens AG
 -->
 # AWS CloudWatch Exporter

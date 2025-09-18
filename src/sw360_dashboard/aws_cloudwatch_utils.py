@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# SPDX-License-Identifier: EPL-2.0
+# SPDX-License-Identifier: MIT
 # Copyright Siemens AG, 2025. Part of the SW360 Portal Project.
 #
-# This program and the accompanying materials are made
-# available under the terms of the Eclipse Public License 2.0
-# which is available at https://www.eclipse.org/legal/epl-2.0/
-#
-# SPDX-License-Identifier: EPL-2.0
 # This module contains utility functions for AWS CloudWatch integration,
 # EC2 instance monitoring, and EBS volume metrics collection.
 
@@ -19,9 +14,11 @@ from typing import Dict, List, Optional
 import backoff
 import boto3
 import dotenv
-import requests.exceptions
 from botocore.exceptions import ClientError
-from prometheus_client import push_to_gateway, CollectorRegistry, Gauge
+from prometheus_client import Gauge
+from src.sw360_dashboard.couchdb_utils import (
+    backoff_printer, giveup_printer,
+)
 
 # Load environment variables from .env file
 dotenv.load_dotenv()
@@ -46,9 +43,7 @@ def get_aws_session():
         session = boto3.Session(
             aws_access_key_id=aws_access_key,
             aws_secret_access_key=aws_secret_key,
-            aws_session_token=aws_session_token,  # Will be None for permanent credentials
-            region_name=aws_region,
-        )
+            aws_session_token=aws_session_token, region_name=aws_region, )
     else:
         # Fall back to IAM role or default credential chain
         session = boto3.Session(region_name=aws_region)
@@ -72,27 +67,6 @@ def get_ec2_client():
     return session.client("ec2")
 
 
-def get_pushgateway_url() -> str:
-    """
-    Get Push Gateway URL from environment
-    """
-    return os.getenv("PUSHGATEWAY_URL", "localhost:9091")
-
-
-def backoff_printer(details):
-    print(
-        "Backing off {wait:0.1f} seconds after {tries} tries "
-        "calling function {target} with args {args} and kwargs "
-        "{kwargs}".format(**details)
-    )
-    if "exception" in details:
-        print(f"Exception: {details['exception']}")
-
-
-def giveup_printer(details):
-    print(f"AWS API error: {details}")
-
-
 def giveup_not_throttle_exception(ex: Exception) -> bool:
     """
     Function to give up retrying if the exception is not a throttle exception.
@@ -100,97 +74,72 @@ def giveup_not_throttle_exception(ex: Exception) -> bool:
     if isinstance(ex, ClientError):
         error_code = ex.response.get("Error", {}).get("Code", "")
         return error_code not in [
-            "Throttling",
-            "RequestLimitExceeded",
-            "ServiceUnavailable",
+            "Throttling", "RequestLimitExceeded", "ServiceUnavailable",
         ]
     return True
 
 
 @backoff.on_exception(
-    backoff.expo,
-    ClientError,
-    max_tries=MAX_BACKOFF_RETRIES,
-    max_time=MAX_BACKOFF_TIME,
-    giveup=giveup_not_throttle_exception,
-    on_backoff=backoff_printer,
-    on_giveup=giveup_printer,
-    raise_on_giveup=False,
-)
+    backoff.expo, ClientError, max_tries=MAX_BACKOFF_RETRIES,
+    max_time=MAX_BACKOFF_TIME, giveup=giveup_not_throttle_exception,
+    on_backoff=backoff_printer, on_giveup=giveup_printer,
+    raise_on_giveup=False, )
 def get_running_instances(ec2_client) -> List[Dict]:
     """
     Get all running EC2 instances
     """
-    try:
-        response = ec2_client.describe_instances(
-            Filters=[{"Name": "instance-state-name", "Values": ["running"]}]
-        )
+    response = ec2_client.describe_instances(
+        Filters=[{"Name": "instance-state-name", "Values": ["running"]}],
+    )
 
-        instances = []
-        for reservation in response["Reservations"]:
-            for instance in reservation["Instances"]:
-                instance_info = {
-                    "InstanceId": instance["InstanceId"],
-                    "InstanceType": instance["InstanceType"],
-                    "LaunchTime": instance["LaunchTime"],
-                    "AvailabilityZone": instance["Placement"]["AvailabilityZone"],
-                    "Tags": {
-                        tag["Key"]: tag["Value"] for tag in instance.get(
-                            "Tags",
-                            [])},
-                }
-                instances.append(instance_info)
+    instances = []
+    for reservation in response["Reservations"]:
+        for instance in reservation["Instances"]:
+            instance_info = {
+                "InstanceId": instance["InstanceId"],
+                "InstanceType": instance["InstanceType"],
+                "LaunchTime": instance["LaunchTime"],
+                "AvailabilityZone": instance["Placement"]["AvailabilityZone"],
+                "Tags": {tag["Key"]: tag["Value"] for tag in instance.get(
+                    "Tags", [],
+                )},
+            }
+            instances.append(instance_info)
 
-        return instances
-    except Exception as e:
-        print(f"Error fetching running instances: {e}")
-        return []
+    return instances
 
 
 @backoff.on_exception(
-    backoff.expo,
-    ClientError,
-    max_tries=MAX_BACKOFF_RETRIES,
-    max_time=MAX_BACKOFF_TIME,
-    giveup=giveup_not_throttle_exception,
-    on_backoff=backoff_printer,
-    on_giveup=giveup_printer,
-    raise_on_giveup=False,
-)
+    backoff.expo, ClientError, max_tries=MAX_BACKOFF_RETRIES,
+    max_time=MAX_BACKOFF_TIME, giveup=giveup_not_throttle_exception,
+    on_backoff=backoff_printer, on_giveup=giveup_printer,
+    raise_on_giveup=False, )
 def get_cloudwatch_metric(
-    cloudwatch_client,
-    namespace: str,
-    metric_name: str,
-    dimensions: List[Dict],
-    start_time: datetime,
-    end_time: datetime,
-    statistic: str = "Average",
+        cloudwatch_client, namespace: str, metric_name: str,
+        dimensions: List[Dict],
+        start_time: datetime, end_time: datetime, statistic: str = "Average",
 ) -> Optional[float]:
     """
     Get CloudWatch metric data
     """
-    try:
-        response = cloudwatch_client.get_metric_statistics(
-            Namespace=namespace,
-            MetricName=metric_name,
-            Dimensions=dimensions,
-            StartTime=start_time,
-            EndTime=end_time,
-            Period=300,  # 5 minutes
-            Statistics=[statistic],
+    response = cloudwatch_client.get_metric_statistics(
+        Namespace=namespace,
+        MetricName=metric_name,
+        Dimensions=dimensions,
+        StartTime=start_time,
+        EndTime=end_time,
+        Period=300,  # 5 minutes
+        Statistics=[statistic],
+    )
+
+    if response["Datapoints"]:
+        # Get the latest datapoint
+        latest_datapoint = max(
+            response["Datapoints"], key=lambda x: x["Timestamp"],
         )
+        return latest_datapoint[statistic]
 
-        if response["Datapoints"]:
-            # Get the latest datapoint
-            latest_datapoint = max(
-                response["Datapoints"],
-                key=lambda x: x["Timestamp"])
-            return latest_datapoint[statistic]
-
-        return None
-    except Exception as e:
-        print(f"Error fetching CloudWatch metric {metric_name}: {e}")
-        return None
+    return None
 
 
 def get_ebs_volumes_for_instance(ec2_client, instance_id: str) -> List[Dict]:
@@ -199,7 +148,8 @@ def get_ebs_volumes_for_instance(ec2_client, instance_id: str) -> List[Dict]:
     """
     try:
         response = ec2_client.describe_volumes(
-            Filters=[{"Name": "attachment.instance-id", "Values": [instance_id]}]
+            Filters=[
+                {"Name": "attachment.instance-id", "Values": [instance_id]}],
         )
 
         volumes = []
@@ -221,36 +171,11 @@ def get_ebs_volumes_for_instance(ec2_client, instance_id: str) -> List[Dict]:
         return []
 
 
-@backoff.on_exception(
-    backoff.expo,
-    requests.exceptions.ChunkedEncodingError,
-    max_tries=MAX_PUSH_GATEWAY_RETRIES,
-    on_backoff=backoff_printer,
-    on_giveup=giveup_printer,
-)
-def push_metrics(
-        job_name="aws_cloudwatch_exporter",
-        registry=CollectorRegistry()):
-    """
-    Push metrics to Prometheus Push Gateway
-    """
-    push_to_gateway(
-        get_pushgateway_url(),
-        job=job_name,
-        registry=registry,
-        grouping_key={"instance": "latest"},
-    )
-
-
 def collect_ec2_instance_metrics(
-    ec2_client,
-    cloudwatch_client,
-    instances: List[Dict],
-    running_instances_gauge: Gauge,
-    cpu_utilization_gauge: Gauge,
-    memory_utilization_gauge: Gauge,
-    network_in_gauge: Gauge,
-    network_out_gauge: Gauge,
+        ec2_client, cloudwatch_client, instances: List[Dict],
+        running_instances_gauge: Gauge, cpu_utilization_gauge: Gauge,
+        memory_utilization_gauge: Gauge, network_in_gauge: Gauge,
+        network_out_gauge: Gauge,
 ):
     """
     Collect EC2 instance metrics and update gauges
@@ -263,7 +188,8 @@ def collect_ec2_instance_metrics(
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(minutes=15)  # Last 15 minutes
 
-    processed_instances = set()  # Track processed instances to avoid duplicates
+    processed_instances = set()  # Track processed instances to avoid
+    # duplicates
 
     for instance in instances:
         instance_id = instance["InstanceId"]
@@ -284,13 +210,9 @@ def collect_ec2_instance_metrics(
 
         # CPU Utilization
         cpu_util = get_cloudwatch_metric(
-            cloudwatch_client,
-            "AWS/EC2",
-            "CPUUtilization",
-            dimensions,
+            cloudwatch_client, "AWS/EC2", "CPUUtilization", dimensions,
             start_time,
-            end_time,
-            "Average",
+            end_time, "Average",
         )
         if cpu_util is not None:
             cpu_utilization_gauge.labels(
@@ -302,13 +224,9 @@ def collect_ec2_instance_metrics(
 
         # Memory Utilization (requires CloudWatch agent)
         memory_util = get_cloudwatch_metric(
-            cloudwatch_client,
-            "CWAgent",
-            "mem_used_percent",
-            dimensions,
+            cloudwatch_client, "CWAgent", "mem_used_percent", dimensions,
             start_time,
-            end_time,
-            "Average",
+            end_time, "Average",
         )
         if memory_util is not None:
             memory_utilization_gauge.labels(
@@ -320,13 +238,8 @@ def collect_ec2_instance_metrics(
 
         # Network In
         network_in = get_cloudwatch_metric(
-            cloudwatch_client,
-            "AWS/EC2",
-            "NetworkIn",
-            dimensions,
-            start_time,
-            end_time,
-            "Average",
+            cloudwatch_client, "AWS/EC2", "NetworkIn", dimensions, start_time,
+            end_time, "Average",
         )
         if network_in is not None:
             network_in_gauge.labels(
@@ -338,13 +251,8 @@ def collect_ec2_instance_metrics(
 
         # Network Out
         network_out = get_cloudwatch_metric(
-            cloudwatch_client,
-            "AWS/EC2",
-            "NetworkOut",
-            dimensions,
-            start_time,
-            end_time,
-            "Average",
+            cloudwatch_client, "AWS/EC2", "NetworkOut", dimensions, start_time,
+            end_time, "Average",
         )
         if network_out is not None:
             network_out_gauge.labels(
@@ -356,16 +264,11 @@ def collect_ec2_instance_metrics(
 
 
 def collect_ebs_volume_metrics(
-    ec2_client,
-    cloudwatch_client,
-    instances: List[Dict],
-    volume_size_gauge: Gauge,
-    volume_used_size_gauge: Gauge,
-    volume_free_size_gauge: Gauge,
-    volume_utilization_percent_gauge: Gauge,
-    volume_iops_gauge: Gauge,
-    volume_read_ops_gauge: Gauge,
-    volume_write_ops_gauge: Gauge,
+        ec2_client, cloudwatch_client, instances: List[Dict],
+        volume_size_gauge: Gauge, volume_used_size_gauge: Gauge,
+        volume_free_size_gauge: Gauge, volume_utilization_percent_gauge: Gauge,
+        volume_iops_gauge: Gauge, volume_read_ops_gauge: Gauge,
+        volume_write_ops_gauge: Gauge,
 ):
     """
     Collect EBS volume metrics and update gauges
@@ -382,16 +285,20 @@ def collect_ebs_volume_metrics(
         instance_name = instance["Tags"].get("Name", "unnamed")
 
         print(
-            f"Processing EBS volumes for instance: {instance_id} ({instance_name})")
+            f"Processing EBS volumes for instance: {instance_id} ("
+            f"{instance_name})",
+        )
 
         try:
             disk_details = get_enhanced_disk_metrics(
-                ec2_client, cloudwatch_client, instance_id
+                ec2_client, cloudwatch_client, instance_id,
             )
 
             if not disk_details:
                 print(
-                    f"No disk metrics found for instance {instance_id}, falling back to basic volume info"
+                    f"No disk metrics found for instance {instance_id}, "
+                    f"falling back to "
+                    f"basic volume info",
                 )
                 # Fallback to basic volume information
                 volumes = get_ebs_volumes_for_instance(ec2_client, instance_id)
@@ -411,7 +318,9 @@ def collect_ebs_volume_metrics(
                         instance_id=instance_id,
                         instance_name=instance_name,
                         volume_type=volume_type,
-                    ).set(volume_size)
+                    ).set(
+                        volume_size,
+                    )
 
                     # Set estimated values (50% utilization)
                     estimated_used_gb = volume_size * 0.5
@@ -423,22 +332,27 @@ def collect_ebs_volume_metrics(
                         instance_id=instance_id,
                         instance_name=instance_name,
                         volume_type=volume_type,
-                    ).set(estimated_used_gb)
+                    ).set(
+                        estimated_used_gb,
+                    )
 
                     volume_free_size_gauge.labels(
                         volume_id=volume_id,
                         instance_id=instance_id,
                         instance_name=instance_name,
                         volume_type=volume_type,
-                    ).set(estimated_free_gb)
+                    ).set(
+                        estimated_free_gb,
+                    )
 
                     volume_utilization_percent_gauge.labels(
                         volume_id=volume_id,
                         instance_id=instance_id,
                         instance_name=instance_name,
                         volume_type=volume_type,
-                    ).set(estimated_utilization)
-                continue
+                    ).set(
+                        estimated_utilization,
+                    )
 
             # Process enhanced disk metrics
             for device, metrics in disk_details.items():
@@ -454,7 +368,9 @@ def collect_ebs_volume_metrics(
                 volume_size = metrics["volume_size"]
 
                 print(
-                    f"Processing volume: {volume_id} (device: {device}) for instance {instance_id}"
+                    f"Processing volume: {volume_id} (device: {device}) for "
+                    f"instance "
+                    f"{instance_id}",
                 )
 
                 # Set volume size
@@ -463,32 +379,42 @@ def collect_ebs_volume_metrics(
                     instance_id=instance_id,
                     instance_name=instance_name,
                     volume_type=volume_type,
-                ).set(volume_size)
+                ).set(
+                    volume_size,
+                )
 
                 volume_used_size_gauge.labels(
                     volume_id=volume_id,
                     instance_id=instance_id,
                     instance_name=instance_name,
                     volume_type=volume_type,
-                ).set(metrics["used_gb"])
+                ).set(
+                    metrics["used_gb"],
+                )
 
                 volume_free_size_gauge.labels(
                     volume_id=volume_id,
                     instance_id=instance_id,
                     instance_name=instance_name,
                     volume_type=volume_type,
-                ).set(metrics["free_gb"])
+                ).set(
+                    metrics["free_gb"],
+                )
 
                 volume_utilization_percent_gauge.labels(
                     volume_id=volume_id,
                     instance_id=instance_id,
                     instance_name=instance_name,
                     volume_type=volume_type,
-                ).set(metrics["utilization_percent"])
+                ).set(
+                    metrics["utilization_percent"],
+                )
 
                 print(
                     f"Volume {volume_id}: {metrics['used_gb']:.2f}GB used, "
-                    f"{metrics['free_gb']:.2f}GB free, {metrics['utilization_percent']:.1f}% utilization")
+                    f"{metrics['free_gb']:.2f}GB free, "
+                    f"{metrics['utilization_percent']:.1f}% utilization",
+                )
 
             # Collect additional EBS metrics (IOPS, read/write ops) for all
             # volumes
@@ -501,13 +427,9 @@ def collect_ebs_volume_metrics(
 
                 # Volume IOPS (Queue Length)
                 volume_iops = get_cloudwatch_metric(
-                    cloudwatch_client,
-                    "AWS/EBS",
-                    "VolumeQueueLength",
+                    cloudwatch_client, "AWS/EBS", "VolumeQueueLength",
                     dimensions,
-                    start_time,
-                    end_time,
-                    "Average",
+                    start_time, end_time, "Average",
                 )
                 if volume_iops is not None:
                     volume_iops_gauge.labels(
@@ -515,17 +437,15 @@ def collect_ebs_volume_metrics(
                         instance_id=instance_id,
                         instance_name=instance_name,
                         volume_type=volume_type,
-                    ).set(volume_iops)
+                    ).set(
+                        volume_iops,
+                    )
 
                 # Volume Read Operations
                 volume_read_ops = get_cloudwatch_metric(
-                    cloudwatch_client,
-                    "AWS/EBS",
-                    "VolumeReadOps",
-                    dimensions,
+                    cloudwatch_client, "AWS/EBS", "VolumeReadOps", dimensions,
                     start_time,
-                    end_time,
-                    "Sum",
+                    end_time, "Sum",
                 )
                 if volume_read_ops is not None:
                     volume_read_ops_gauge.labels(
@@ -533,17 +453,14 @@ def collect_ebs_volume_metrics(
                         instance_id=instance_id,
                         instance_name=instance_name,
                         volume_type=volume_type,
-                    ).set(volume_read_ops)
+                    ).set(
+                        volume_read_ops,
+                    )
 
                 # Volume Write Operations
                 volume_write_ops = get_cloudwatch_metric(
-                    cloudwatch_client,
-                    "AWS/EBS",
-                    "VolumeWriteOps",
-                    dimensions,
-                    start_time,
-                    end_time,
-                    "Sum",
+                    cloudwatch_client, "AWS/EBS", "VolumeWriteOps", dimensions,
+                    start_time, end_time, "Sum",
                 )
                 if volume_write_ops is not None:
                     volume_write_ops_gauge.labels(
@@ -551,11 +468,15 @@ def collect_ebs_volume_metrics(
                         instance_id=instance_id,
                         instance_name=instance_name,
                         volume_type=volume_type,
-                    ).set(volume_write_ops)
+                    ).set(
+                        volume_write_ops,
+                    )
 
         except Exception as e:
             print(
-                f"Error collecting EBS metrics for instance {instance_id}: {e}")
+                f"Error collecting EBS metrics for instance {instance_id}: "
+                f"{e}",
+            )
             continue
 
 
@@ -565,10 +486,9 @@ def get_size_gb(size_bytes: int) -> float:
 
 
 def get_metric_data_enhanced(
-        cloudwatch_client,
-        today_obj: datetime,
-        yesterday_obj: datetime,
-        instance_id: str):
+        cloudwatch_client, today_obj: datetime, yesterday_obj: datetime,
+        instance_id: str,
+):
     """
     Enhanced method to get disk metrics using batch queries
     """
@@ -595,13 +515,13 @@ def get_metric_data_enhanced(
 
     # Add disk total metrics to query
     metric_query, dev_set = add_dev_to_query(
-        disk_total_metrics, metric_query, "disk_total"
+        disk_total_metrics, metric_query, "disk_total",
     )
     device_names |= dev_set
 
     # Add disk used metrics to query
     metric_query, dev_set = add_dev_to_query(
-        disk_used_metrics, metric_query, "disk_used"
+        disk_used_metrics, metric_query, "disk_used",
     )
     device_names |= dev_set
 
@@ -610,9 +530,9 @@ def get_metric_data_enhanced(
 
     # Execute batch query
     response = cloudwatch_client.get_metric_data(
-        MetricDataQueries=metric_query,
-        StartTime=yesterday_obj,
-        EndTime=today_obj)
+        MetricDataQueries=metric_query, StartTime=yesterday_obj,
+        EndTime=today_obj,
+    )
 
     return response, device_names
 
@@ -623,15 +543,17 @@ def add_dev_to_query(disk_metrics, metric_query, metric_name):
     """
     devices = set()
     for metric in disk_metrics["Metrics"]:
-        dev_name = [d for d in metric["Dimensions"]
-                    if d["Name"] == "device"][0]["Value"]
+        dev_name = [
+            d for d in metric["Dimensions"] if d["Name"] == "device"
+        ][0]["Value"]
         devices.add(dev_name)
         metric_query.append(
             {
                 "Id": f"{metric_name}_{dev_name}",
-                "MetricStat": {"Metric": metric, "Period": 86400, "Stat": "Maximum"},
+                "MetricStat": {"Metric": metric, "Period": 86400,
+                               "Stat": "Maximum"},
                 "ReturnData": True,
-            }
+            },
         )
     return metric_query, devices
 
@@ -661,7 +583,7 @@ def get_enhanced_disk_metrics(ec2_client, cloudwatch_client, instance_id: str):
 
     # Get metric data using enhanced approach
     response, device_names = get_metric_data_enhanced(
-        cloudwatch_client, today_obj, yesterday_obj, instance_id
+        cloudwatch_client, today_obj, yesterday_obj, instance_id,
     )
 
     if not response or len(device_names) < 1:
@@ -669,7 +591,7 @@ def get_enhanced_disk_metrics(ec2_client, cloudwatch_client, instance_id: str):
 
     # Get volumes for this instance
     volumes_response = ec2_client.describe_volumes(
-        Filters=[{"Name": "attachment.instance-id", "Values": [instance_id]}]
+        Filters=[{"Name": "attachment.instance-id", "Values": [instance_id]}],
     )
 
     disk_details = {}
@@ -688,24 +610,24 @@ def get_enhanced_disk_metrics(ec2_client, cloudwatch_client, instance_id: str):
         if total_size > 0:
             total_size_gb = get_size_gb(total_size)
             used_size_gb = get_size_gb(used_size) if used_size > 0 else 0
-            free_size_gb = (get_size_gb(total_size - used_size)
-                            if used_size > 0 else total_size_gb)
+            free_size_gb = (
+                get_size_gb(total_size - used_size,
+                            ) if used_size > 0 else total_size_gb)
 
             # Find matching volume
             vol = find_closest_volume(total_size_gb, volumes_response)
 
             if vol:
                 disk_details[device] = {
-                    "total_bytes": total_size,
-                    "used_bytes": used_size,
+                    "total_bytes": total_size, "used_bytes": used_size,
                     "free_bytes": total_size - used_size,
                     "total_gb": total_size_gb,
-                    "used_gb": used_size_gb,
-                    "free_gb": free_size_gb,
+                    "used_gb": used_size_gb, "free_gb": free_size_gb,
                     "utilization_percent": (
-                        (used_size_gb / total_size_gb * 100) if total_size_gb > 0 else 0),
-                    "device": device,
-                    "volume_id": vol["VolumeId"],
+                        (
+                                    used_size_gb / total_size_gb * 100) if
+                        total_size_gb > 0 else 0),
+                    "device": device, "volume_id": vol["VolumeId"],
                     "volume_size": vol["Size"],
                     "volume_type": vol["VolumeType"],
                     "volume_state": vol["State"],

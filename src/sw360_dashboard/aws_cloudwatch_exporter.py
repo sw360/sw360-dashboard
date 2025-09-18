@@ -1,28 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # -----------------------------------------------------------------------------
-# SPDX-License-Identifier: EPL-2.0
+# SPDX-License-Identifier: MIT
 # Copyright Siemens AG, 2025. Part of the SW360 Portal Project.
 #
-# This program and the accompanying materials are made
-# available under the terms of the Eclipse Public License 2.0
-# which is available at https://www.eclipse.org/legal/epl-2.0/
-#
-# SPDX-License-Identifier: EPL-2.0
-#
-# This script fetches AWS EC2 and EBS metrics from CloudWatch and pushes them to Prometheus
-# ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+# This script fetches AWS EC2 and EBS metrics from CloudWatch and pushes them
+# to Prometheus
+# -----------------------------------------------------------------------------
 
 import time
-import sys
 
-from prometheus_client import CollectorRegistry, Gauge, delete_from_gateway
 from botocore.exceptions import NoCredentialsError, ClientError
+from prometheus_client import CollectorRegistry, Gauge, delete_from_gateway
+from src.sw360_dashboard.couchdb_utils import (
+    get_pushgateway_url, push_metrics,
+)
 
 from .aws_cloudwatch_utils import (
     get_ec2_client, get_cloudwatch_client, get_running_instances,
     collect_ec2_instance_metrics, collect_ebs_volume_metrics,
-    push_metrics, get_pushgateway_url
 )
 
 # Define Prometheus Gauges for AWS metrics
@@ -30,103 +26,90 @@ registry = CollectorRegistry()
 
 # EC2 Instance Metrics
 running_instances_count = Gauge(
-    'aws_ec2_running_instances_total', 
-    'Total number of running EC2 instances', 
-    registry=registry
+    'aws_ec2_running_instances_total', 'Total number of running EC2 instances',
+    registry=registry,
 )
 
 cpu_utilization = Gauge(
-    'aws_ec2_cpu_utilization_percent', 
+    'aws_ec2_cpu_utilization_percent',
     'EC2 instance CPU utilization percentage',
-    ['instance_id', 'instance_type', 'availability_zone', 'name'], 
-    registry=registry
+    ['instance_id', 'instance_type', 'availability_zone', 'name'],
+    registry=registry,
 )
 
 memory_utilization = Gauge(
-    'aws_ec2_memory_utilization_percent', 
+    'aws_ec2_memory_utilization_percent',
     'EC2 instance memory utilization percentage (requires CloudWatch agent)',
-    ['instance_id', 'instance_type', 'availability_zone', 'name'], 
-    registry=registry
+    ['instance_id', 'instance_type', 'availability_zone', 'name'],
+    registry=registry,
 )
 
 network_in = Gauge(
-    'aws_ec2_network_in_bytes', 
-    'EC2 instance network bytes in',
-    ['instance_id', 'instance_type', 'availability_zone', 'name'], 
-    registry=registry
+    'aws_ec2_network_in_bytes', 'EC2 instance network bytes in',
+    ['instance_id', 'instance_type', 'availability_zone', 'name'],
+    registry=registry,
 )
 
 network_out = Gauge(
-    'aws_ec2_network_out_bytes', 
-    'EC2 instance network bytes out',
-    ['instance_id', 'instance_type', 'availability_zone', 'name'], 
-    registry=registry
+    'aws_ec2_network_out_bytes', 'EC2 instance network bytes out',
+    ['instance_id', 'instance_type', 'availability_zone', 'name'],
+    registry=registry,
 )
 
 # EBS Volume Metrics
 volume_size = Gauge(
-    'aws_ebs_volume_size_gb', 
-    'EBS volume size in GB',
-    ['volume_id', 'instance_id', 'instance_name', 'volume_type'], 
-    registry=registry
+    'aws_ebs_volume_size_gb', 'EBS volume size in GB',
+    ['volume_id', 'instance_id', 'instance_name', 'volume_type'],
+    registry=registry,
 )
 
 volume_used_size = Gauge(
-    'aws_ebs_volume_used_size_gb', 
-    'EBS volume used size in GB',
-    ['volume_id', 'instance_id', 'instance_name', 'volume_type'], 
-    registry=registry
+    'aws_ebs_volume_used_size_gb', 'EBS volume used size in GB',
+    ['volume_id', 'instance_id', 'instance_name', 'volume_type'],
+    registry=registry,
 )
 
 volume_free_size = Gauge(
-    'aws_ebs_volume_free_size_gb', 
-    'EBS volume free size in GB',
-    ['volume_id', 'instance_id', 'instance_name', 'volume_type'], 
-    registry=registry
+    'aws_ebs_volume_free_size_gb', 'EBS volume free size in GB',
+    ['volume_id', 'instance_id', 'instance_name', 'volume_type'],
+    registry=registry,
 )
 
 volume_utilization_percent = Gauge(
-    'aws_ebs_volume_utilization_percent', 
-    'EBS volume utilization percentage',
-    ['volume_id', 'instance_id', 'instance_name', 'volume_type'], 
-    registry=registry
+    'aws_ebs_volume_utilization_percent', 'EBS volume utilization percentage',
+    ['volume_id', 'instance_id', 'instance_name', 'volume_type'],
+    registry=registry,
 )
 
 volume_iops = Gauge(
-    'aws_ebs_volume_queue_length', 
-    'EBS volume queue length (IOPS)',
-    ['volume_id', 'instance_id', 'instance_name', 'volume_type'], 
-    registry=registry
+    'aws_ebs_volume_queue_length', 'EBS volume queue length (IOPS)',
+    ['volume_id', 'instance_id', 'instance_name', 'volume_type'],
+    registry=registry,
 )
 
 volume_read_ops = Gauge(
-    'aws_ebs_volume_read_ops_total', 
-    'EBS volume read operations',
-    ['volume_id', 'instance_id', 'instance_name', 'volume_type'], 
-    registry=registry
+    'aws_ebs_volume_read_ops_total', 'EBS volume read operations',
+    ['volume_id', 'instance_id', 'instance_name', 'volume_type'],
+    registry=registry,
 )
 
 volume_write_ops = Gauge(
-    'aws_ebs_volume_write_ops_total', 
-    'EBS volume write operations',
-    ['volume_id', 'instance_id', 'instance_name', 'volume_type'], 
-    registry=registry
+    'aws_ebs_volume_write_ops_total', 'EBS volume write operations',
+    ['volume_id', 'instance_id', 'instance_name', 'volume_type'],
+    registry=registry,
 )
 
 # Instance type distribution
 instance_type_count = Gauge(
-    'aws_ec2_instance_type_count', 
-    'Count of running instances by type',
-    ['instance_type'], 
-    registry=registry
+    'aws_ec2_instance_type_count', 'Count of running instances by type',
+    ['instance_type'], registry=registry,
 )
 
 # Availability zone distribution
 availability_zone_count = Gauge(
-    'aws_ec2_availability_zone_count', 
-    'Count of running instances by availability zone',
-    ['availability_zone'], 
-    registry=registry
+    'aws_ec2_availability_zone_count',
+    'Count of running instances by availability zone', ['availability_zone'],
+    registry=registry,
 )
 
 
@@ -135,22 +118,24 @@ def collect_instance_distribution_metrics(instances):
     Collect instance distribution metrics by type and availability zone
     """
     print("Collecting instance distribution metrics...")
-    
+
     # Count by instance type
     instance_type_counts = {}
     az_counts = {}
-    
+
     for instance in instances:
         instance_type = instance['InstanceType']
         az = instance['AvailabilityZone']
-        
-        instance_type_counts[instance_type] = instance_type_counts.get(instance_type, 0) + 1
+
+        instance_type_counts[instance_type] = instance_type_counts.get(
+            instance_type, 0,
+        ) + 1
         az_counts[az] = az_counts.get(az, 0) + 1
-    
+
     # Update gauges
     for itype, count in instance_type_counts.items():
         instance_type_count.labels(instance_type=itype).set(count)
-    
+
     for az, count in az_counts.items():
         availability_zone_count.labels(availability_zone=az).set(count)
 
@@ -160,89 +145,98 @@ def main():
     Main function to collect and push AWS CloudWatch metrics
     """
     print("\nAWS CloudWatch Exporter starting...")
-    
+
     try:
         # Initialize AWS clients
         print("Initializing AWS clients...")
         ec2_client = get_ec2_client()
         cloudwatch_client = get_cloudwatch_client()
-        
+
         # Test AWS connectivity
         try:
-            ec2_client.describe_regions(RegionNames=[ec2_client._client_config.region_name])
-            print(f"Successfully connected to AWS region: {ec2_client._client_config.region_name}")
+            ec2_client.describe_regions(
+                RegionNames=[ec2_client._client_config.region_name],
+            )
+            print(
+                "Successfully connected to AWS region: "
+                f"{ec2_client._client_config.region_name}",
+            )
         except Exception as e:
             print(f"Failed to connect to AWS: {e}")
             return
-        
+
         # Delete old metrics from push gateway to prevent duplicates
         print("Clearing old metrics from push gateway...")
         try:
             delete_from_gateway(
-                get_pushgateway_url(), 
-                job='aws_cloudwatch_exporter',
-                grouping_key={'instance': 'latest'}
+                get_pushgateway_url(), job='aws_cloudwatch_exporter',
+                grouping_key={'instance': 'latest'},
             )
         except Exception as e:
             print(f"Warning: Could not clear metrics with grouping key: {e}")
-        
+
         try:
             delete_from_gateway(
-                get_pushgateway_url(), 
-                job='aws_cloudwatch_exporter'
+                get_pushgateway_url(), job='aws_cloudwatch_exporter',
             )
         except Exception as e:
-            print(f"Warning: Could not clear metrics without grouping key: {e}")
-        
+            print(
+                f"Warning: Could not clear metrics without grouping key: {e}",
+            )
+
         # Get running instances
         print("Fetching running EC2 instances...")
         instances = get_running_instances(ec2_client)
-        
+
         if not instances:
             print("No running instances found or error fetching instances")
             return
-        
+
         print(f"Found {len(instances)} running instances")
-        
+
         # Collect EC2 instance metrics
         print("Collecting EC2 instance metrics...")
         collect_ec2_instance_metrics(
-            ec2_client, cloudwatch_client, instances,
-            running_instances_count, cpu_utilization,
-            memory_utilization, network_in, network_out
+            ec2_client, cloudwatch_client, instances, running_instances_count,
+            cpu_utilization, memory_utilization, network_in, network_out,
         )
-        
+
         # Collect EBS volume metrics
         print("Collecting EBS volume metrics")
         collect_ebs_volume_metrics(
-            ec2_client, cloudwatch_client, instances,
-            volume_size, volume_used_size, volume_free_size, volume_utilization_percent, 
-            volume_iops, volume_read_ops, volume_write_ops
+            ec2_client, cloudwatch_client, instances, volume_size,
+            volume_used_size,
+            volume_free_size, volume_utilization_percent, volume_iops,
+            volume_read_ops, volume_write_ops,
         )
-        
+
         # Collect distribution metrics
         print("Collecting instance distribution metrics...")
         collect_instance_distribution_metrics(instances)
-        
+
         # Push metrics to gateway
         print("Pushing metrics to Prometheus Push Gateway...")
         push_metrics('aws_cloudwatch_exporter', registry)
-        
+
         print("AWS CloudWatch Exporter completed successfully")
-        
+
     except NoCredentialsError:
-        print("Error: AWS credentials not found. Please configure AWS credentials.")
-        print("You can set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables")
+        print(
+            "Error: AWS credentials not found. Please configure AWS "
+            "credentials.",
+        )
+        print(
+            "You can set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY "
+            "environment "
+            "variables",
+        )
         print("or use IAM roles if running on EC2.")
-        sys.exit(1)
-        
+
     except ClientError as e:
         print(f"AWS API Error: {e}")
-        sys.exit(1)
-        
+
     except Exception as e:
         print(f"Unexpected error: {e}")
-        sys.exit(1)
 
 
 if __name__ == '__main__':
@@ -255,4 +249,3 @@ if __name__ == '__main__':
         print("\nExecution interrupted by user")
     except Exception as e:
         print(f'Exception: {e}')
-        sys.exit(1)
