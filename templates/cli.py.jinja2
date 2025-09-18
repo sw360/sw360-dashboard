@@ -16,6 +16,8 @@ from .couchdb_CLI_exporter import main as cli_main
 from .couchdb_{{ group|lower }}_exporter import main as {{ group|lower }}_main{% endfor %}
 
 from .couchdb_common_metrics import main as exporter_main
+from .aws_cloudwatch_exporter import main as aws_main
+from .couchdb_CRP_exporter import main as crp_main
 
 
 @click.command()
@@ -31,6 +33,8 @@ def cli(exporters: tuple[str, ...]):
         if ex.upper() == "{{ group }}":
             execute_main({{ group|lower }}_main)
         {%- endfor %}
+    execute_main(aws_main)
+    execute_main(crp_main)
 
 
 def execute_main(function_main):
