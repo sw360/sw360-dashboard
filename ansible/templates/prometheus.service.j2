@@ -1,0 +1,22 @@
+[Unit]
+Description=Prometheus server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User={{ user }}
+Group={{ group }}
+Type=simple
+Restart=always
+WorkingDirectory={{ install_dir }}/prometheus
+RuntimeDirectory=prometheus
+RuntimeDirectoryMode=0750
+ExecStart={{ install_dir }}/prometheus/prometheus \
+    --config.file={{ install_dir }}/prometheus/prometheus.yml \
+    --storage.tsdb.retention.time=7d
+
+LimitNOFILE=10000
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

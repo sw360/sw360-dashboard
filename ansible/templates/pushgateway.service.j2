@@ -1,0 +1,20 @@
+[Unit]
+Description=Prometheus Pushgateway server
+Wants=network-online.target
+After=prometheus.service
+
+[Service]
+User={{ user }}
+Group={{ group }}
+Type=simple
+Restart=always
+WorkingDirectory={{ install_dir }}/pushgateway
+RuntimeDirectory=pushgateway
+RuntimeDirectoryMode=0750
+ExecStart={{ install_dir }}/pushgateway/pushgateway
+
+LimitNOFILE=10000
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# SPDX-License-Identifier: EPL-2.0
+# Copyright Siemens AG, 2025. Part of the SW360 Portal Project.
+#
+# This program and the accompanying materials are made
+# available under the terms of the Eclipse Public License 2.0
+# which is available at https://www.eclipse.org/legal/epl-2.0/
+#
+# SPDX-License-Identifier: EPL-2.0
+---
+- name: SW360 Dashboard Infrastructure Setup
+  hosts: foss360  # Replace with your actual group name present in your inventory
+  become: yes
+  vars:
+    # Software versions
+    prometheus_version: "2.47.2"
+    pushgateway_version: "1.6.2"
+    
+    # Configuration
+    install_dir: "/opt"
+    user: "username"  # Replace with the appropriate username
+    group: "groupname"  # Replace with the appropriate group name
+    
+  tasks:
+    # Prerequisites
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    # Step 0: Install Poetry and SW360 Dashboard dependencies
+    - name: Install Poetry
+      shell: |
+        curl -sSL https://install.python-poetry.org | python3 -
+      args:
+        creates: "/home/{{ user }}/.local/bin/poetry"
+      become_user: "{{ user }}"
+
+    - name: Add Poetry to PATH in .bashrc
+      lineinfile:
+        path: "/home/{{ user }}/.bashrc"
+        line: 'export PATH="$HOME/.local/bin:$PATH"'
+        create: yes
+      become_user: "{{ user }}"
+
+    - name: Display Poetry installation completion
+      debug:
+        msg: |
+          ✅ Poetry has been successfully installed for user {{ user }}
+          
+          To set up the SW360 Dashboard, please:
+          1. Clone the SW360 dashboard repository to your desired location
+          2. Navigate to the cloned directory
+          3. Run: poetry install
+          4. Run: poetry run generate-groups <your_business_units>
+          5. Create .env from .env.example and configure it
+          
+          Example:
+          git clone <repository_url> /path/to/sw360-dashboard
+          cd /path/to/sw360-dashboard
+          poetry install
+          poetry run generate-groups DEPT DEPT2
+          cp .env.example .env
+          # Edit .env with your SW360 configuration
+
+    # Step 1: Install Prometheus
+
+    - name: Download and extract Prometheus directly to installation directory
+      unarchive:
+        src: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+        dest: "{{ install_dir }}"
+        remote_src: yes
+        owner: "{{ user }}"
+        group: "{{ group }}"
+        creates: "{{ install_dir }}/prometheus-{{ prometheus_version }}.linux-amd64"
+
+    - name: Create symlink for Prometheus
+      file:
+        src: "{{ install_dir }}/prometheus-{{ prometheus_version }}.linux-amd64"
+        dest: "{{ install_dir }}/prometheus"
+        state: link
+        owner: "{{ user }}"
+        group: "{{ group }}"
+
+    - name: Create Prometheus systemd service file
+      template:
+        src: prometheus.service.j2
+        dest: /etc/systemd/system/prometheus.service
+        mode: '0644'
+      notify: restart prometheus
+
+    - name: Enable and start Prometheus service
+      systemd:
+        name: prometheus
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    # Step 2: Install Prometheus Pushgateway
+
+    - name: Download and extract Pushgateway directly to installation directory
+      unarchive:
+        src: "https://github.com/prometheus/pushgateway/releases/download/v{{ pushgateway_version }}/pushgateway-{{ pushgateway_version }}.linux-amd64.tar.gz"
+        dest: "{{ install_dir }}"
+        remote_src: yes
+        owner: "{{ user }}"
+        group: "{{ group }}"
+        creates: "{{ install_dir }}/pushgateway-{{ pushgateway_version }}.linux-amd64"
+
+    - name: Create symlink for Pushgateway
+      file:
+        src: "{{ install_dir }}/pushgateway-{{ pushgateway_version }}.linux-amd64"
+        dest: "{{ install_dir }}/pushgateway"
+        state: link
+        owner: "{{ user }}"
+        group: "{{ group }}"
+
+    - name: Create Pushgateway systemd service file
+      template:
+        src: pushgateway.service.j2
+        dest: /etc/systemd/system/pushgateway.service
+        mode: '0644'
+      notify: restart pushgateway
+
+    - name: Enable and start Pushgateway service
+      systemd:
+        name: pushgateway
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    - name: Remove duplicate scrape_configs section if it exists
+      blockinfile:
+        path: "{{ install_dir }}/prometheus/prometheus.yml"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Pushgateway"
+        state: absent
+
+    - name: Configure Prometheus to scrape Pushgateway
+      blockinfile:
+        path: "{{ install_dir }}/prometheus/prometheus.yml"
+        block: |
+          
+            # Pushgateway job configuration
+            - job_name: 'pushgateway'
+              static_configs:
+                - targets: ['localhost:9091']
+        marker: "  # {mark} ANSIBLE MANAGED BLOCK - Pushgateway"
+        backup: yes
+        insertafter: 'targets: \["localhost:9090"\]'
+      notify: restart prometheus
+
+    # Step 3: Install Grafana Community Edition (Open Source)
+    - name: Add Grafana GPG key
+      apt_key:
+        url: https://apt.grafana.com/gpg.key
+        state: present
+
+    - name: Add Grafana repository
+      apt_repository:
+        repo: "deb https://apt.grafana.com stable main"
+        state: present
+
+    - name: Install Grafana Community Edition
+      apt:
+        name: grafana
+        state: present
+        update_cache: yes
+
+    - name: Configure Grafana to use port 3001
+      lineinfile:
+        path: /etc/grafana/grafana.ini
+        regexp: '^;?http_port'
+        line: 'http_port = 3001'
+        backup: yes
+      notify: restart grafana
+
+    - name: Enable and start Grafana service
+      systemd:
+        name: grafana-server
+        enabled: yes
+        state: started
+
+    # Cleanup - No temporary files to clean up since we extract directly to destination
+
+  handlers:
+    - name: restart prometheus
+      systemd:
+        name: prometheus
+        state: restarted
+        daemon_reload: yes
+
+    - name: restart pushgateway
+      systemd:
+        name: pushgateway
+        state: restarted
+        daemon_reload: yes
+
+    - name: restart grafana
+      systemd:
+        name: grafana-server
+        state: restarted
+
+  post_tasks:
+    - name: Display setup completion message
+      debug:
+        msg: |
+          ========================================
+          SW360 Dashboard Infrastructure Complete!
+          ========================================
+          
+          Services installed and running:
+          ✓ Prometheus: http://localhost:9090
+          ✓ Pushgateway: http://localhost:9091  
+          ✓ Grafana: http://localhost:3001
+          ✓ Poetry: Installed for user {{ user }}
+          
+          Default Grafana login:
+          - Username: admin
+          - Password: admin
+          
+          Next steps:
+          1. Clone the SW360 dashboard repository to your preferred location
+          2. Navigate to the repository and run: poetry install
+          3. Generate group files: poetry run generate-groups <business_units>
+          4. Configure .env file with your SW360 credentials
+          5. Configure Grafana datasource to point to http://localhost:9090
+          6. Import dashboards from grafana/dashboards/ directory
+          7. Test SW360 exporter: poetry run sw360-exporter <business_units>
+          8. Setup cron job for automated metrics collection
+          
+          Service management commands:
+          - sudo systemctl status prometheus
+          - sudo systemctl status pushgateway
+          - sudo systemctl status grafana-server
+          
+          Poetry is available for user {{ user }} - reload shell or run:
+          export PATH="$HOME/.local/bin:$PATH"
