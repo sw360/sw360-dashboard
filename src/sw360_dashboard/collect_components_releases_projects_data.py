@@ -28,7 +28,7 @@ from collections import defaultdict
 
 DRY_RUN = True
 
-COUCHSERVER = "http://username:pwd@localhost:5984/"
+COUCHSERVER = "http://usrname:passwrd@localhost:5984/"
 DBNAME = 'sw360db'
 
 couch = couchdb.Server(COUCHSERVER)
